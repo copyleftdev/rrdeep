@@ -10,3 +10,9 @@ clap = { version = "4.3.2", features = ["derive"] }
 colored = "2.1"
 # For user-friendly date/time formatting
 chrono = "0.4"
+
+
+[dev-dependencies]
+assert_cmd = "2.0.8"
+predicates = "2.1.5"
+tempfile = "3.5.0"
