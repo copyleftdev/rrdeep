@@ -1,0 +1,12 @@
+[package]
+name = "rrdeep"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Clap with derive macros
+clap = { version = "4.3.2", features = ["derive"] }
+# For pretty ANSI colors
+colored = "2.1"
+# For user-friendly date/time formatting
+chrono = "0.4"
