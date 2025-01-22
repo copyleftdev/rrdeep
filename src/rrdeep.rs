@@ -1,6 +1,9 @@
-use std::io::{BufReader, Read};
 use std::fs::File;
+use std::io::{BufReader, Read};
 use std::path::PathBuf;
+use std::sync::mpsc::{sync_channel, SyncSender};
+use std::thread;
+use std::time::Instant;
 
 const N: usize = 64;
 const W: usize = 7;
@@ -45,7 +48,8 @@ impl Rolling {
         self.h2 = self.h2.wrapping_add(self.h1);
     }
     fn digest(&self) -> u64 {
-        self.h2.wrapping_add(self.h1.wrapping_mul(self.n as u64))
+        self.h2
+            .wrapping_add(self.h1.wrapping_mul(self.n as u64))
     }
 }
 
@@ -75,20 +79,76 @@ fn derive_bs(size: usize) -> u64 {
     b
 }
 
-/// Computes a fuzzy-hash signature from the **file content**, reading in a streaming fashion.
-/// This allows very large files to be hashed without loading them all into memory.
-pub fn compute_rrdeep_from_path(path: &PathBuf) -> std::io::Result<String> {
+
+pub struct PerfMetrics {
+    pub total_bytes: usize,
+    pub duration_s: f64,
+    pub speed_mbps: f64,
+}
+
+
+fn producer_thread(path: PathBuf, tx: SyncSender<Vec<u8>>) {
+    let file = match File::open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Error: could not open file {}: {}", path.display(), e);
+            let _ = tx.send(Vec::new());
+            return;
+        }
+    };
+
+    let mut reader = BufReader::new(file);
+    loop {
+        let mut buf = vec![0u8; 64 * 1024];
+        match reader.read(&mut buf) {
+            Ok(0) => {
+                
+                let _ = tx.send(Vec::new());
+                break;
+            }
+            Ok(n) => {
+                buf.truncate(n);
+                if tx.send(buf).is_err() {
+                    
+                    break;
+                }
+            }
+            Err(e) => {
+                eprintln!("Error reading {}: {}", path.display(), e);
+                let _ = tx.send(Vec::new());
+                break;
+            }
+        }
+    }
+}
+
+
+pub fn compute_rrdeep_from_path_concurrent(
+    path: &PathBuf
+) -> std::io::Result<(String, PerfMetrics)> {
     let meta = std::fs::metadata(path)?;
     let size = meta.len() as usize;
     if size == 0 {
-        return Ok("3:3:1".to_string());
+        return Ok(("3:3:1".to_string(), PerfMetrics {
+            total_bytes: 0,
+            duration_s: 0.0,
+            speed_mbps: 0.0,
+        }));
     }
 
     let b1 = derive_bs(size);
     let b2 = if b1 > 1 { b1 / 2 } else { 1 };
 
-    let f = File::open(path)?;
-    let mut reader = BufReader::new(f);
+    let (tx, rx) = sync_channel::<Vec<u8>>(4);
+    let path_clone = path.clone();
+
+    // Start timing now
+    let start = Instant::now();
+    let mut total_bytes = 0usize;
+
+    thread::spawn(move || {
+        producer_thread(path_clone, tx);
+    });
 
     let mut r1 = Rolling::new();
     let mut s1 = Simple::new();
@@ -98,23 +158,21 @@ pub fn compute_rrdeep_from_path(path: &PathBuf) -> std::io::Result<String> {
     let mut s2 = Simple::new();
     let mut sig2_chars = Vec::new();
 
-    let mut buf = [0u8; 8192];
-    loop {
-        let read_bytes = reader.read(&mut buf)?;
-        if read_bytes == 0 {
+    for chunk in rx {
+        if chunk.is_empty() {
             break;
         }
-        for &b in &buf[..read_bytes] {
+        total_bytes += chunk.len();
+        for &b in &chunk {
             r1.roll(b);
             s1.update(b);
-            if b1 > 0 && (r1.digest() % b1) == (b1 - 1) {
+            if (r1.digest() % b1) == (b1 - 1) {
                 sig1_chars.push(s1.c());
                 s1 = Simple::new();
             }
-
             r2.roll(b);
             s2.update(b);
-            if b2 > 0 && (r2.digest() % b2) == (b2 - 1) {
+            if (r2.digest() % b2) == (b2 - 1) {
                 sig2_chars.push(s2.c());
                 s2 = Simple::new();
             }
@@ -133,10 +191,22 @@ pub fn compute_rrdeep_from_path(path: &PathBuf) -> std::io::Result<String> {
     }
     let s2_str: String = sig2_chars.into_iter().collect();
 
-    Ok(format!("{}:{}:{}", s1_str, s2_str, b1))
+    
+    let elapsed = start.elapsed().as_secs_f64();
+    let speed_mbps = if elapsed > 0.0 {
+        (total_bytes as f64) / (1024.0 * 1024.0 * elapsed)
+    } else {
+        0.0
+    };
+    let perf = PerfMetrics {
+        total_bytes,
+        duration_s: elapsed,
+        speed_mbps,
+    };
+
+    Ok((format!("{}:{}:{}", s1_str, s2_str, b1), perf))
 }
 
-/// For direct signature-vs-signature comparisons
 pub fn compare_rrdeep(a: &str, b: &str) -> i32 {
     let (a1, a2, ab) = match parse(a) {
         Some(x) => x,
@@ -211,7 +281,7 @@ fn edit_dist(a: &str, b: &str) -> usize {
         for j in 1..=lb {
             let cost = if aa[i - 1] == bb[j - 1] { 0 } else { 1 };
             let up = dp[(i - 1) * (lb + 1) + j] + 1;
-            let left = dp[i * (lb + 1) + (j - 1)] + 1;
+            let left = dp[i * (lb + 1) + j - 1] + 1;
             let diag = dp[(i - 1) * (lb + 1) + (j - 1)] + cost;
             dp[i * (lb + 1) + j] = up.min(left.min(diag));
         }

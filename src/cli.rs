@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::process::exit;
 use colored::*;
 use chrono::{DateTime, Utc};
-use crate::rrdeep::{compute_rrdeep_from_path, compare_rrdeep};
+use crate::rrdeep::{compare_rrdeep, compute_rrdeep_from_path_concurrent};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -53,16 +53,16 @@ fn compare_files(file1: PathBuf, file2: PathBuf) {
     let mt1 = meta1.modified().unwrap_or(UNIX_EPOCH);
     let mt2 = meta2.modified().unwrap_or(UNIX_EPOCH);
 
-    // NEW: Call the streaming-based function
-    let sig1 = match compute_rrdeep_from_path(&file1) {
-        Ok(s) => s,
+    // Now we get both the signature & performance metrics
+    let (sig1, perf1) = match compute_rrdeep_from_path_concurrent(&file1) {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("Error: Could not read file {}: {}", file1.display(), e);
             exit(1);
         }
     };
-    let sig2 = match compute_rrdeep_from_path(&file2) {
-        Ok(s) => s,
+    let (sig2, perf2) = match compute_rrdeep_from_path_concurrent(&file2) {
+        Ok(v) => v,
         Err(e) => {
             eprintln!("Error: Could not read file {}: {}", file2.display(), e);
             exit(1);
@@ -70,7 +70,6 @@ fn compare_files(file1: PathBuf, file2: PathBuf) {
     };
 
     let score = compare_rrdeep(&sig1, &sig2);
-
     let res = match score {
         s if s >= 80 => "Very Similar".green().bold(),
         s if s >= 50 => "Similar".yellow().bold(),
@@ -93,6 +92,24 @@ fn compare_files(file1: PathBuf, file2: PathBuf) {
     println!();
     println!("{} {}", "Similarity Score:".bold(), score);
     println!("{} {}", "Result:".bold(), res);
+
+    // Print performance metrics for each file
+    println!();
+    println!("Performance Metrics:");
+    println!(
+        "  {} => processed {} bytes in {:.3}s => {:.2} MB/s",
+        file1.display(),
+        perf1.total_bytes,
+        perf1.duration_s,
+        perf1.speed_mbps
+    );
+    println!(
+        "  {} => processed {} bytes in {:.3}s => {:.2} MB/s",
+        file2.display(),
+        perf2.total_bytes,
+        perf2.duration_s,
+        perf2.speed_mbps
+    );
     println!();
 }
 

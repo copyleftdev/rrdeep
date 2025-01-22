@@ -1,0 +1,10 @@
+# rrdeep
+
+**rrdeep** is a **Rust** implementation of **Context-Triggered Piecewise Hashing** (CTPH) — the fuzzy-hashing technique popularized by **ssdeep**. It calculates “spamsum”-style fuzzy hashes for files or data buffers, allowing you to measure approximate similarity between content. 
+
+This is especially useful for:
+- **Malware detection** where variants of the same malicious file differ slightly.
+- **Data deduplication** or **forensics** when files share large overlapping segments.
+- **Document similarity** or **plagiarism checks** where the text is mostly the same with minor edits.
+
+By generating fuzzy-hash signatures, `rrdeep` makes it straightforward to **compare** two files and retrieve a **similarity score**. The **higher** the score (up to **100**), the more similar the data.
